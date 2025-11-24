@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import datetime
+import zipfile
 from typing import Callable, Any, Tuple, Dict
 
 import webview
@@ -217,6 +218,164 @@ def start_inference():
             print(f"Error starting subprocess: {e}")
             current_process = None
             return jsonify({"status": "error", "message": f"Failed to start process: {e}"}), 500
+
+@app.route('/health_check', methods=['GET'])
+def health_check():
+    """Simple health check endpoint."""
+    try:
+        # Check if Flask is running and accessible
+        return jsonify({"status": "ok", "message": "Flask server is running"}), 200
+    except Exception as e:
+        print(f"Health check failed: {e}")
+        return jsonify({"status": "error", "message": f"Flask server is not running: {e}"}), 500
+    
+@app.route('/upload_beatmap', methods=['POST'])
+def upload_beatmap_file():
+    """Handles beatmap file upload."""
+    beatmap_file = request.files.get('beatmap_file')
+    if not beatmap_file:
+        return jsonify({"status": "error", "message": "No beatmap file provided"}), 400
+
+    # Get optional subfolder from form data
+    subfolder = request.form.get('subfolder', '').strip()
+
+    # Save the uploaded file to a temporary location
+    temp_dir = os.path.join(script_dir, 'temp')
+    if subfolder:
+        temp_dir = os.path.join(temp_dir, subfolder)
+    os.makedirs(temp_dir, exist_ok=True)
+    beatmap_path = os.path.join(temp_dir, beatmap_file.filename)
+
+    try:
+        beatmap_file.save(beatmap_path)
+        print(f"Beatmap file saved to: {beatmap_path}")
+        return jsonify({"status": "success", "message": "Beatmap file uploaded successfully", "path": beatmap_path}), 200
+    except Exception as e:
+        print(f"Error saving beatmap file: {e}")
+        return jsonify({"status": "error", "message": f"Failed to save beatmap file: {e}"}), 500
+
+
+@app.route('/upload_beatmapset', methods=['POST'])
+def upload_beatmapset():
+    """Handles beatmapset (.osz) file upload with zip bomb protection and extraction."""
+    beatmapset_file = request.files.get('beatmapset_file')
+    if not beatmapset_file:
+        return jsonify({"status": "error", "message": "No beatmapset file provided"}), 400
+
+    # Check if file ends with .osz
+    if not beatmapset_file.filename.lower().endswith('.osz'):
+        return jsonify({"status": "error", "message": "File must be a .osz file"}), 400
+
+    # Get optional subfolder from form data
+    subfolder = request.form.get('subfolder', '').strip()
+
+    # Save the uploaded file to a temporary location first
+    temp_dir = os.path.join(script_dir, 'temp')
+    if subfolder:
+        temp_dir = os.path.join(temp_dir, subfolder)
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    osz_path = os.path.join(temp_dir, beatmapset_file.filename)
+    
+    try:
+        beatmapset_file.save(osz_path)
+        print(f"Beatmapset file saved to: {osz_path}")
+        
+        # Check for zip bomb
+        MAX_SIZE = 500 * 1024 * 1024  # 500 MB uncompressed limit
+        MAX_RATIO = 100  # Maximum compression ratio
+        
+        try:
+            with zipfile.ZipFile(osz_path, 'r') as zip_ref:
+                # Check total uncompressed size
+                total_uncompressed = sum(info.file_size for info in zip_ref.infolist())
+                compressed_size = os.path.getsize(osz_path)
+                
+                if total_uncompressed > MAX_SIZE:
+                    zip_ref.close()  # Explicitly close before removing
+                    os.remove(osz_path)
+                    return jsonify({
+                        "status": "error", 
+                        "message": f"File too large when uncompressed: {total_uncompressed / (1024*1024):.1f} MB (max {MAX_SIZE / (1024*1024):.1f} MB)"
+                    }), 400
+                
+                # Check compression ratio to detect zip bombs
+                if compressed_size > 0:
+                    ratio = total_uncompressed / compressed_size
+                    if ratio > MAX_RATIO:
+                        zip_ref.close()  # Explicitly close before removing
+                        os.remove(osz_path)
+                        return jsonify({
+                            "status": "error", 
+                            "message": f"Suspicious compression ratio detected: {ratio:.1f}x (max {MAX_RATIO}x)"
+                        }), 400
+                
+                # Create extraction folder with the name of the .osz file (without extension)
+                folder_name = os.path.splitext(beatmapset_file.filename)[0]
+                extract_dir = os.path.join(temp_dir, folder_name)
+                
+                # Remove existing directory if it exists
+                if os.path.exists(extract_dir):
+                    import shutil
+                    shutil.rmtree(extract_dir)
+                
+                os.makedirs(extract_dir, exist_ok=True)
+                
+                # Extract the .osz file
+                zip_ref.extractall(extract_dir)
+                print(f"Beatmapset extracted to: {extract_dir}")
+            
+            # Remove the .osz file after extraction (outside the with block)
+            os.remove(osz_path)
+            
+            return jsonify({
+                "status": "success", 
+                "message": "Beatmapset uploaded and extracted successfully", 
+                "path": extract_dir
+            }), 200
+                
+        except zipfile.BadZipFile:
+            # For bad zip files, the file should already be closed
+            try:
+                os.remove(osz_path)
+            except:
+                pass
+            return jsonify({"status": "error", "message": "Invalid .osz file (corrupted zip)"}), 400
+            
+    except Exception as e:
+        print(f"Error processing beatmapset file: {e}")
+        # Clean up if there was an error
+        if os.path.exists(osz_path):
+            try:
+                os.remove(osz_path)
+            except:
+                pass
+        return jsonify({"status": "error", "message": f"Failed to process beatmapset file: {e}"}), 500
+    
+@app.route('/upload_audio', methods=['POST'])
+def upload_audio():
+    """Handles audio file upload."""
+    audio_file = request.files.get('audio_file')
+    if not audio_file:
+        return jsonify({"status": "error", "message": "No audio file provided"}), 400
+
+    # Get optional subfolder from form data
+    subfolder = request.form.get('subfolder', '').strip()
+
+    # Save the uploaded file to a temporary location
+    temp_dir = os.path.join(script_dir, 'temp')
+    if subfolder:
+        temp_dir = os.path.join(temp_dir, subfolder)
+    os.makedirs(temp_dir, exist_ok=True)
+    audio_path = os.path.join(temp_dir, audio_file.filename)
+    
+    try:
+        audio_file.save(audio_path)
+        print(f"Audio file saved to: {audio_path}")
+        return jsonify({"status": "success", "message": "Audio file uploaded successfully", "path": audio_path}), 200
+    except Exception as e:
+        print(f"Error saving audio file: {e}")
+        return jsonify({"status": "error", "message": f"Failed to save audio file: {e}"}), 500
 
 
 @app.route('/stream_output')
@@ -489,22 +648,22 @@ def run_flask(port):
 
     # Use threaded=True for better concurrency within Flask
     # Avoid debug=True as it interferes with threading and pywebview
-    print(f"Starting Flask server on http://127.0.0.1:{port}")
+    print(f"Starting Flask server on http://0.0.0.0:{port}")
     try:
         # Explicitly set debug=False, in addition to FLASK_ENV=production
-        app.run(host='127.0.0.1', port=port, threaded=True, debug=False)
+        app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
     except OSError as e:
         print(f"Flask server could not start on port {port}: {e}")
         # Optionally: try another port or exit
 
 
 # --- Function to Find Available Port ---
-def find_available_port(start_port=5000, max_tries=100):
+def find_available_port(start_port=7051, max_tries=1):
     """Finds an available TCP port."""
     for port in range(start_port, start_port + max_tries):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                s.bind(('127.0.0.1', port))
+                s.bind(('0.0.0.0', port))
                 print(f"Found available port: {port}")
                 return port
             except OSError:
@@ -542,7 +701,7 @@ if __name__ == '__main__':
 
     # Create the pywebview window pointing to the Flask server
     window_title = 'MaiMod'
-    flask_url = f'http://127.0.0.1:{flask_port}/'
+    flask_url = f'http://localhost:{flask_port}/'
 
     print(f"Creating pywebview window loading URL: {flask_url}")
 
