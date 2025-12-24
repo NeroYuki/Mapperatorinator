@@ -465,6 +465,7 @@ def load_model_with_server(
         precision: str = "fp32",
         eval_mode: bool = True,
         lora_path=None,
+        flash_attention: bool = False,
 ):
     model_loader, tokenizer_loader = load_model_loaders(
         ckpt_path_str=ckpt_path_str,
@@ -474,6 +475,7 @@ def load_model_with_server(
         eval_mode=eval_mode,
         pickle_module=routed_pickle,
         lora_path=lora_path,
+        flash_attention=flash_attention,
     )
     return InferenceClient(
         model_loader,
@@ -536,6 +538,7 @@ def main(args: InferenceConfig):
         use_server=args.use_server,
         precision=args.precision,
         lora_path=args.lora_path,
+        flash_attention=args.flash_attention,
     )
 
     diff_model, diff_tokenizer, refine_model = None, None, None

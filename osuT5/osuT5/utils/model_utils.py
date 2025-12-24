@@ -112,6 +112,7 @@ def load_model_loaders(
         eval_mode: bool = True,
         pickle_module=None,
         lora_path=None,
+        flash_attention: bool = False,
 ):
     if ckpt_path_str == "":
         if eval_mode:
@@ -135,10 +136,26 @@ def load_model_loaders(
     tokenizer = tokenizer_loader()
 
     def model_loader():
+        # Determine torch dtype based on precision parameter
+        torch_dtype = None
+        if precision == "bf16":
+            torch_dtype = torch.bfloat16
+        elif flash_attention:
+            # Flash attention requires fp16 or bf16, default to fp16 if precision is fp32
+            torch_dtype = torch.float16
+        
         if ckpt_path_str == "":
             model = get_model(t5_args, tokenizer)
         elif not (ckpt_path / "pytorch_model.bin").exists() or not (ckpt_path / "custom_checkpoint_0.pkl").exists():
-            model = Mapperatorinator.from_pretrained(ckpt_path_str)
+            attn_implementation = "flash_attention_2" if flash_attention else None
+            # For flash attention, we need to load directly to GPU device
+            device_map = device if flash_attention else None
+            model = Mapperatorinator.from_pretrained(
+                ckpt_path_str, 
+                attn_implementation=attn_implementation, 
+                torch_dtype=torch_dtype,
+                device_map=device_map
+            )
             model.generation_config.disable_compile = True
         else:
             model_state = torch.load(ckpt_path / "pytorch_model.bin", map_location=device, weights_only=True)
@@ -164,15 +181,21 @@ def load_model_loaders(
         if eval_mode:
             model.eval()
 
+        # Move to device FIRST before applying dtype conversion (required for flash attention)
         model.to(device)
 
-        if precision == "bf16":
-            # Cast every submodule to bfloat16 except for the spectrogram module
+        # Apply precision conversion after moving to device
+        if torch_dtype is not None and (ckpt_path_str == "" or (ckpt_path / "pytorch_model.bin").exists()):
+            # Cast every submodule to the target dtype except for the spectrogram module
             for name, module in model.named_modules():
                 if name != "" and "spectrogram" not in name:
-                    module.to(torch.bfloat16)
+                    module.to(torch_dtype)
+        
+        # Ensure spectrogram module always stays in float32 regardless of loading method
+        if hasattr(model, 'spectrogram'):
+            model.spectrogram.to(torch.float32)
 
-        print(f"Model loaded: {ckpt_path_str} on device {device}")
+        print(f"Model loaded: {ckpt_path_str} on device {device} with dtype {torch_dtype}")
         return model
 
     return model_loader, tokenizer_loader

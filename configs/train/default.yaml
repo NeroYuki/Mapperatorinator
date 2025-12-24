@@ -4,7 +4,7 @@ defaults:
 compile: true          # PyTorch 2.0 optimization
 device: gpu             # Training device (cpu/gpu)
 precision: 'bf16'         # Enable mixed precision (no/fp16/bf16/fp8)
-seed: 42                # Project seed
+seed: 123                # Project seed
 flash_attention: false  # Enable Flash Attention
 
 checkpoint_path: ''     # Project checkpoint directory (to resume training)
